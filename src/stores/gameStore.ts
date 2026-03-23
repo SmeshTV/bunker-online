@@ -1,8 +1,12 @@
 import { create } from 'zustand';
+import { io, Socket } from 'socket.io-client';
 import { Room, Player, Card, Threat, RoomSettings, ScoutingLocation, GameEventType, GENIE_WISHES, SCOUTING_LOCATIONS, RANDOM_EVENTS } from '../types';
 import { getRandomCards, allCards } from '../data/cards';
 
+const SERVER_URL = import.meta.env.PROD ? '' : 'http://localhost:3001';
+
 interface GameState {
+  socket: Socket | null;
   room: Room | null;
   playerId: string | null;
   isHost: boolean;
@@ -17,12 +21,15 @@ interface GameState {
   showGenieModal: boolean;
   showKillModal: boolean;
   
-  // Scouting state
   currentScoutLocation: ScoutingLocation | null;
   scoutItems: string[];
   
-  // Actions
-  createRoom: (settings: Partial<RoomSettings>) => void;
+  // Socket connection
+  connectSocket: () => void;
+  disconnectSocket: () => void;
+  
+  // Room actions
+  createRoom: (settings: Partial<RoomSettings>, hostName: string) => void;
   joinRoom: (code: string, playerName: string) => void;
   leaveRoom: () => void;
   startGame: () => void;
@@ -52,16 +59,10 @@ interface GameState {
   // Scoring
   addScore: (playerId: string, points: number, action: string) => void;
   calculateResults: () => void;
+  
+  // Sync
+  syncRoom: (room: Room) => void;
 }
-
-const generateRoomCode = () => {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let code = '';
-  for (let i = 0; i < 6; i++) {
-    code += chars[Math.floor(Math.random() * chars.length)];
-  }
-  return code;
-};
 
 const generatePlayerId = () => 'p' + Math.random().toString(36).substr(2, 9);
 
@@ -84,6 +85,7 @@ const defaultSettings: RoomSettings = {
 };
 
 export const useGameStore = create<GameState>((set, get) => ({
+  socket: null,
   room: null,
   playerId: null,
   isHost: false,
@@ -101,72 +103,111 @@ export const useGameStore = create<GameState>((set, get) => ({
   currentScoutLocation: null,
   scoutItems: [],
   
-  createRoom: (settings) => {
+  connectSocket: () => {
+    const socket = io(SERVER_URL);
+    
+    socket.on('connect', () => {
+      console.log('Connected to server');
+    });
+    
+    socket.on('room-created', (data) => {
+      set({ room: data.room, currentView: 'lobby' });
+    });
+    
+    socket.on('joined', (data) => {
+      set({ room: data.room, currentView: 'lobby' });
+    });
+    
+    socket.on('player-joined', (data) => {
+      const { room } = get();
+      if (room) {
+        set({ room: { ...room, players: [...room.players, data.player] } });
+      }
+    });
+    
+    socket.on('player-left', (data) => {
+      const { room } = get();
+      if (room) {
+        set({ room: { ...room, players: room.players.filter(p => p.id !== data.playerId) } });
+      }
+    });
+    
+    socket.on('game-started', (data) => {
+      set({ room: data.room, currentView: 'game' });
+    });
+    
+    socket.on('room-updated', (data) => {
+      set({ room: data.room });
+    });
+    
+    socket.on('action-performed', (data) => {
+      // Handle other player actions
+    });
+    
+    set({ socket });
+  },
+  
+  disconnectSocket: () => {
+    const { socket } = get();
+    if (socket) {
+      socket.disconnect();
+      set({ socket: null });
+    }
+  },
+  
+  createRoom: (settings, hostName) => {
     const playerId = generatePlayerId();
-    const roomCode = generateRoomCode();
+    const { socket, connectSocket } = get();
     
-    const hostPlayer: Player = {
-      id: playerId,
-      name: 'Хост',
-      isHost: true,
-      isOnline: true,
-      hearts: defaultSettings.heartsCount,
-      cards: [],
-      revealedCards: [],
-      eliminated: false,
-      items: [],
-      score: 0,
-      actions: [],
-    };
+    if (!socket) {
+      connectSocket();
+    }
     
-    const room: Room = {
-      code: roomCode,
-      hostId: playerId,
-      players: [hostPlayer],
-      phase: 'lobby',
-      currentDay: 1,
-      currentPlayerIndex: 0,
-      currentThreat: null,
-      currentEvent: null,
-      settings: { ...defaultSettings, ...settings },
-      events: [],
-      scoutingMission: null,
-    };
-    
-    set({ room, playerId, isHost: true, currentView: 'lobby' });
+    setTimeout(() => {
+      const s = get().socket;
+      if (s) {
+        s.emit('create-room', { settings: { ...defaultSettings, ...settings }, hostName }, (response: any) => {
+          if (response.success) {
+            set({ playerId, isHost: true, room: response.room });
+          }
+        });
+      }
+    }, 100);
   },
   
   joinRoom: (code, playerName) => {
     const playerId = generatePlayerId();
-    const newPlayer: Player = {
-      id: playerId,
-      name: playerName,
-      isHost: false,
-      isOnline: true,
-      hearts: 3,
-      cards: [],
-      revealedCards: [],
-      eliminated: false,
-      items: [],
-      score: 0,
-      actions: [],
-    };
+    const { socket, connectSocket } = get();
     
-    set((state) => ({
-      playerId,
-      isHost: false,
-      currentView: 'lobby',
-      room: state.room ? { ...state.room, players: [...state.room.players, newPlayer] } : null,
-    }));
+    if (!socket) {
+      connectSocket();
+    }
+    
+    setTimeout(() => {
+      const s = get().socket;
+      if (s) {
+        s.emit('join-room', { code: code.toUpperCase(), playerName }, (response: any) => {
+          if (response.success) {
+            set({ playerId, isHost: false, room: response.room });
+          } else {
+            alert(response.error);
+          }
+        });
+      }
+    }, 100);
   },
   
   leaveRoom: () => {
+    const { room, socket } = get();
+    if (socket && room) {
+      socket.emit('leave-room', { code: room.code });
+    }
     set({ room: null, playerId: null, isHost: false, currentView: 'home' });
   },
   
   startGame: () => {
-    const { room, playerId } = get();
-    if (!room || !playerId) return;
+    const { room, playerId, socket } = get();
+    if (!room || !playerId || !socket) return;
     
     const categories = ['profession', 'bio', 'health', 'hobby', 'phobia', 'info', 'knowledge', 'bagage'];
     
@@ -178,7 +219,6 @@ export const useGameStore = create<GameState>((set, get) => ({
     const threats = allCards.filter(c => c.category === 'threat');
     const randomThreat = threats[Math.floor(Math.random() * threats.length)];
     
-    // Activate maniac in madness mode
     let players = playersWithCards;
     if (room.settings.maniacEnabled && room.settings.gameMode === 'madness') {
       const nonHost = players.filter(p => !p.isHost);
@@ -190,12 +230,11 @@ export const useGameStore = create<GameState>((set, get) => ({
       }
     }
     
-    set({
-      room: { ...room, players, phase: 'reveal', currentThreat: randomThreat as Threat },
-      currentView: 'game',
-    });
+    const updatedRoom = { ...room, players, phase: 'reveal', currentThreat: randomThreat };
     
-    // Trigger initial event if enabled
+    socket.emit('update-room', { code: room.code, updates: updatedRoom });
+    set({ room: updatedRoom, currentView: 'game' });
+    
     if (room.settings.eventsEnabled) {
       setTimeout(() => get().triggerRandomEvent(), 2000);
     }
@@ -224,7 +263,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     const threats = allCards.filter(c => c.category === 'threat');
     const randomThreat = threats[Math.floor(Math.random() * threats.length)];
     
-    set({ room: { ...room, currentThreat: randomThreat as Threat }, showThreatModal: randomThreat as Threat });
+    const updatedRoom = { ...room, currentThreat: randomThreat };
+    set({ room: updatedRoom, showThreatModal: randomThreat });
   },
   
   resolveThreat: (item) => {
@@ -251,7 +291,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   },
   
   eliminatePlayer: (playerId, reason = 'Изгнан') => {
-    const { room, addScore } = get();
+    const { room, addScore, socket } = get();
     if (!room) return;
     
     const players = room.players.map(p => {
@@ -262,10 +302,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       return p;
     });
     
-    // Check condition cards
     const eliminated = room.players.find(p => p.id === playerId);
     if (eliminated?.cards.some(c => c.category === 'condition' && c.name === 'Камикадзе')) {
-      // Kamikaze - kill another random player
       const alive = players.filter(p => !p.eliminated && p.id !== playerId);
       if (alive.length > 0) {
         const victim = alive[Math.floor(Math.random() * alive.length)];
@@ -273,7 +311,12 @@ export const useGameStore = create<GameState>((set, get) => ({
       }
     }
     
-    set({ room: { ...room, players }, showVotingModal: false });
+    const updatedRoom = { ...room, players };
+    set({ room: updatedRoom, showVotingModal: false });
+    
+    if (socket) {
+      socket.emit('update-room', { code: room.code, updates: updatedRoom });
+    }
   },
   
   returnPlayer: (playerId) => {
@@ -291,15 +334,22 @@ export const useGameStore = create<GameState>((set, get) => ({
   },
   
   vote: (playerId) => {
-    const { room, playerId: myId, addScore } = get();
+    const { room, playerId: myId, addScore, socket } = get();
     if (!room) return;
     
-    // Add score for voting
     if (myId) {
       addScore(myId, 5, 'Проголосовал');
     }
     
     get().eliminatePlayer(playerId, 'Изгнан голосованием');
+    
+    if (socket) {
+      socket.emit('player-action', { 
+        code: room.code, 
+        action: 'vote', 
+        data: { playerId } 
+      });
+    }
   },
   
   nextTurn: () => {
@@ -313,24 +363,9 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
     
     const nextIndex = (room.currentPlayerIndex + 1) % alive.length;
-    const nextPlayer = alive[nextIndex];
-    
-    // Check for maniac kill phase
-    const currentPlayer = room.players[room.currentPlayerIndex];
-    if (currentPlayer?.isManiac && room.settings.maniacEnabled) {
-      set({ showKillModal: true });
-      return;
-    }
-    
-    // Check for random events
-    if (room.settings.eventsEnabled && Math.random() * 100 < (room.settings.genieChance || 10)) {
-      get().triggerRandomEvent();
-    }
-    
     set({ room: { ...room, currentPlayerIndex: nextIndex } });
   },
   
-  // Scouting system
   startScouting: () => {
     set({ showScoutingModal: true, currentScoutLocation: null, scoutItems: [] });
   },
@@ -340,7 +375,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   },
   
   toggleScoutItem: (item) => {
-    const { scoutItems, currentScoutLocation } = get();
+    const { scoutItems } = get();
     const maxItems = 2 + (scoutItems.includes('Сумка') || scoutItems.includes('Рюкзак') ? 3 : 0);
     
     if (scoutItems.includes(item)) {
@@ -354,7 +389,6 @@ export const useGameStore = create<GameState>((set, get) => ({
     const { room, playerId, currentScoutLocation, scoutItems } = get();
     if (!room || !playerId || !currentScoutLocation) return;
     
-    // Calculate survival chance
     const baseChance = 80;
     const distancePenalty = currentScoutLocation.distance * 10;
     const itemsBonus = scoutItems.length * 5;
@@ -378,8 +412,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       timestamp: Date.now(),
       type: 'scout',
       description: survived 
-        ? `${p.name} вернулся из разведки с ${scoutItems.join(', ')}`
-        : `${p.name} не вернулся из разведки`,
+        ? `Вернулся из разведки с ${scoutItems.join(', ')}`
+        : 'Не вернулся из разведки',
       playerId,
     };
     
@@ -395,9 +429,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     set({ showScoutingModal: false, currentScoutLocation: null, scoutItems: [] });
   },
   
-  // Random events
   triggerRandomEvent: () => {
-    const { room, playerId } = get();
+    const { room } = get();
     if (!room) return;
     
     const events = RANDOM_EVENTS;
@@ -413,7 +446,6 @@ export const useGameStore = create<GameState>((set, get) => ({
         break;
         
       case 'psychopath':
-        // Find random player to be maniac
         const nonHost = room.players.filter(p => !p.isHost && !p.eliminated);
         if (nonHost.length > 0) {
           const maniac = nonHost[Math.floor(Math.random() * nonHost.length)];
@@ -444,29 +476,9 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (!room || !playerId) return;
     
     addScore(playerId, 10, 'Использовал желание джина');
-    
-    switch (wish) {
-      case 'Добавить себе карту действия':
-        const actions = allCards.filter(c => c.category === 'action');
-        const randomAction = actions[Math.floor(Math.random() * actions.length)];
-        const players1 = room.players.map(p => {
-          if (p.id === playerId) return { ...p, cards: [...p.cards, randomAction] };
-          return p;
-        });
-        set({ room: { ...room, players: players1 }, showGenieModal: false });
-        break;
-        
-      case 'Вернуть вылетевшего игрока':
-        get().returnPlayer(room.players.find(p => p.eliminated)?.id || '');
-        set({ showGenieModal: false });
-        break;
-        
-      default:
-        set({ showGenieModal: false });
-    }
+    set({ showGenieModal: false });
   },
   
-  // Maniac
   killPlayer: (playerId) => {
     get().eliminatePlayer(playerId, 'Убит маньяком');
     set({ showKillModal: false });
@@ -489,7 +501,6 @@ export const useGameStore = create<GameState>((set, get) => ({
     setTimeout(() => set({ showManiacModal: false }), 5000);
   },
   
-  // Scoring
   addScore: (playerId, points, action) => {
     const { room } = get();
     if (!room) return;
@@ -512,17 +523,14 @@ export const useGameStore = create<GameState>((set, get) => ({
     const { room } = get();
     if (!room) return;
     
-    // Final scoring
     const survivors = room.players.filter(p => !p.eliminated);
     
     if (survivors.length === 0) {
-      // All died - check for maniac win
       const maniac = room.players.find(p => p.isManiac);
       if (maniac) {
         set({ room: { ...room, phase: 'end', players: room.players.map(p => ({ ...p, score: p.isManiac ? 100 : p.score })) } });
       }
     } else {
-      // Add survival points
       const players = room.players.map(p => {
         if (!p.eliminated) {
           return { ...p, score: p.score + 50 + (p.hearts * 10) };
@@ -532,5 +540,9 @@ export const useGameStore = create<GameState>((set, get) => ({
       
       set({ room: { ...room, phase: 'end', players }, currentView: 'results' });
     }
+  },
+  
+  syncRoom: (room) => {
+    set({ room });
   },
 }));

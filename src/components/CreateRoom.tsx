@@ -5,6 +5,7 @@ import { RoomSettings } from '../types';
 export default function CreateRoom() {
   const createRoom = useGameStore((state) => state.createRoom);
   
+  const [hostName, setHostName] = useState('Хост');
   const [settings, setSettings] = useState<Partial<RoomSettings>>({
     playerCount: 6,
     cardsPerPlayer: 8,
@@ -24,7 +25,7 @@ export default function CreateRoom() {
   });
   
   const handleCreate = () => {
-    createRoom(settings);
+    createRoom(settings, hostName);
   };
   
   return (
@@ -32,6 +33,18 @@ export default function CreateRoom() {
       <h2 className="text-3xl font-bold text-red-500 mb-8">Создание комнаты</h2>
       
       <div className="max-w-xl w-full space-y-6 overflow-auto">
+        {/* Host Name */}
+        <div className="bg-gray-900/50 p-4 rounded-lg border border-red-500/20">
+          <label className="block text-gray-300 mb-2">Ваше имя</label>
+          <input 
+            type="text" 
+            value={hostName} 
+            onChange={(e) => setHostName(e.target.value)} 
+            className="w-full bg-gray-800 text-white p-2 rounded border border-red-500/30"
+            placeholder="Как вас зовут?"
+          />
+        </div>
+        
         {/* Player Count */}
         <div className="bg-gray-900/50 p-4 rounded-lg border border-red-500/20">
           <label className="block text-gray-300 mb-2">Количество игроков: {settings.playerCount}</label>
