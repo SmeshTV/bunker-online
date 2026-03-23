@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useGameStore } from '../stores/gameStore';
-import { Card, Player } from '../types';
+import { Card, Player, ScoutingLocation } from '../types';
+import { SCOUTING_LOCATIONS, GENIE_WISHES } from '../types';
 
 export default function Game() {
   const { 
@@ -13,10 +14,25 @@ export default function Game() {
     eliminatePlayer, 
     returnPlayer,
     vote,
+    startScouting,
+    selectLocation,
+    toggleScoutItem,
+    completeScout,
+    cancelScout,
     showCardModal,
     showThreatModal,
     showVotingModal,
+    showScoutingModal,
     showEventModal,
+    showManiacModal,
+    showGenieModal,
+    showKillModal,
+    currentScoutLocation,
+    scoutItems,
+    killPlayer,
+    handleGenieWish,
+    triggerRandomEvent,
+    nextTurn,
   } = useGameStore();
   
   const [selectedCard, setSelectedCard] = useState<Card | null>(null);
@@ -26,11 +42,7 @@ export default function Game() {
   
   const currentPlayer = room.players.find(p => p.id === playerId);
   const isMyTurn = room.players[room.currentPlayerIndex]?.id === playerId;
-  
-  const visibleCards = currentPlayer?.cards.filter(c => 
-    currentPlayer?.revealedCards.includes(c.id) || 
-    room.settings.showDescriptions
-  ) || [];
+  const isManiac = currentPlayer?.isManiac;
   
   const getCardCategoryName = (category: string) => {
     const names: Record<string, string> = {
@@ -70,7 +82,7 @@ export default function Game() {
           <p className="text-gray-400 text-sm mt-1">{card.description}</p>
         )}
         {!isRevealed && !showDescription && (
-          <p className="text-gray-600 text-sm mt-1">Скрыто - нажмите чтобы открыть</p>
+          <p className="text-gray-600 text-sm mt-1">Нажмите чтобы открыть</p>
         )}
       </div>
     );
@@ -87,9 +99,10 @@ export default function Game() {
         </div>
         <div className="flex items-center gap-2">
           {currentPlayer && (
-            <span className="text-red-400">
-              {'❤️'.repeat(currentPlayer.hearts)}
-            </span>
+            <>
+              <span className="text-red-400">{'❤️'.repeat(currentPlayer.hearts)}</span>
+              {isManiac && <span className="text-purple-400">🔪</span>}
+            </>
           )}
         </div>
       </div>
@@ -106,11 +119,8 @@ export default function Game() {
               )}
             </div>
             {isHost && (
-              <button
-                onClick={addThreat}
-                className="px-4 py-2 bg-red-600 rounded-lg text-white"
-              >
-                Новая угроза
+              <button onClick={addThreat} className="px-4 py-2 bg-red-600 rounded-lg text-white">
+                Новая
               </button>
             )}
           </div>
@@ -118,16 +128,12 @@ export default function Game() {
       )}
       
       {/* Tabs */}
-      <div className="flex gap-2 mb-4">
+      <div className="flex gap-2 mb-4 flex-wrap">
         {(['my-cards', 'players', 'threat', 'items'] as const).map(tab => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
-            className={`px-4 py-2 rounded-lg ${
-              activeTab === tab 
-                ? 'bg-red-600 text-white' 
-                : 'bg-gray-800 text-gray-400'
-            }`}
+            className={`px-4 py-2 rounded-lg ${activeTab === tab ? 'bg-red-600 text-white' : 'bg-gray-800 text-gray-400'}`}
           >
             {tab === 'my-cards' && 'Мои карты'}
             {tab === 'players' && 'Игроки'}
@@ -135,6 +141,31 @@ export default function Game() {
             {tab === 'items' && 'Предметы'}
           </button>
         ))}
+        
+        {room.settings.scoutEnabled && (
+          <button
+            onClick={startScouting}
+            className="px-4 py-2 rounded-lg bg-green-600 text-white"
+          >
+            🚀 Разведка
+          </button>
+        )}
+        
+        {isHost && (
+          <button
+            onClick={triggerRandomEvent}
+            className="px-4 py-2 rounded-lg bg-yellow-600 text-white"
+          >
+            ⚡ Событие
+          </button>
+        )}
+        
+        <button
+          onClick={nextTurn}
+          className="px-4 py-2 rounded-lg bg-blue-600 text-white"
+        >
+          Следующий ход ➡️
+        </button>
       </div>
       
       {/* Content */}
@@ -160,13 +191,13 @@ export default function Game() {
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="text-red-400">{'❤️'.repeat(player.hearts)}</span>
+                    <span className="text-gray-500 text-sm">({player.score} очков)</span>
                     {player.id === room.players[room.currentPlayerIndex]?.id && (
                       <span className="text-yellow-400 animate-pulse">▶️</span>
                     )}
                   </div>
                 </div>
                 
-                {/* Player's revealed cards */}
                 {player.revealedCards.length > 0 && (
                   <div className="flex flex-wrap gap-2">
                     {player.revealedCards.map(cardId => {
@@ -190,12 +221,11 @@ export default function Game() {
             <p className="text-gray-300 mb-4">{room.currentThreat.description}</p>
             {room.currentThreat.dangerLevel && (
               <div className="mb-4">
-                <span className="text-gray-400">Уровень опасности: </span>
+                <span className="text-gray-400">Опасность: </span>
                 <span className="text-red-400">{'💀'.repeat(room.currentThreat.dangerLevel)}</span>
               </div>
             )}
             
-            {/* Resolve with items */}
             <div className="mt-4">
               <h4 className="text-white font-bold mb-2">Использовать предмет:</h4>
               <div className="flex flex-wrap gap-2">
@@ -225,7 +255,7 @@ export default function Game() {
                 ))}
               </div>
             ) : (
-              <p className="text-gray-500">У вас пока нет предметов</p>
+              <p className="text-gray-500">Нет предметов</p>
             )}
           </div>
         )}
@@ -235,33 +265,23 @@ export default function Game() {
       {isHost && (
         <div className="mt-4 pt-4 border-t border-gray-700">
           <div className="flex gap-2 flex-wrap">
-            <button
-              onClick={addThreat}
-              className="px-4 py-2 bg-red-600 rounded-lg text-white"
-            >
-              Добавить угрозу
+            <button onClick={addThreat} className="px-4 py-2 bg-red-600 rounded-lg text-white">
+              Угроза
             </button>
           </div>
           
-          {/* Player management */}
           <div className="mt-4">
-            <h4 className="text-gray-400 mb-2">Управление игроками:</h4>
+            <h4 className="text-gray-400 mb-2">Управление:</h4>
             <div className="flex flex-wrap gap-2">
               {room.players.map(player => (
                 <div key={player.id} className="flex items-center gap-2 bg-gray-800 p-2 rounded">
                   <span className="text-white">{player.name}</span>
                   {player.eliminated ? (
-                    <button
-                      onClick={() => returnPlayer(player.id)}
-                      className="px-2 py-1 bg-green-600 rounded text-white text-sm"
-                    >
+                    <button onClick={() => returnPlayer(player.id)} className="px-2 py-1 bg-green-600 rounded text-white text-sm">
                       Вернуть
                     </button>
                   ) : (
-                    <button
-                      onClick={() => eliminatePlayer(player.id)}
-                      className="px-2 py-1 bg-red-600 rounded text-white text-sm"
-                    >
+                    <button onClick={() => eliminatePlayer(player.id)} className="px-2 py-1 bg-red-600 rounded text-white text-sm">
                       Изгнать
                     </button>
                   )}
@@ -278,12 +298,7 @@ export default function Game() {
           <div className="bg-gray-900 p-6 rounded-lg max-w-lg w-full border border-red-500">
             <div className="flex justify-between items-start mb-4">
               <span className="text-gray-400">{getCardCategoryName(selectedCard.category)}</span>
-              <button 
-                onClick={() => setSelectedCard(null)}
-                className="text-gray-400 hover:text-white text-2xl"
-              >
-                ×
-              </button>
+              <button onClick={() => setSelectedCard(null)} className="text-gray-400 hover:text-white text-2xl">×</button>
             </div>
             <h3 className="text-2xl font-bold text-white mb-2">{selectedCard.name}</h3>
             {selectedCard.description && (
@@ -293,15 +308,8 @@ export default function Game() {
               <div className="text-red-400">{'💀'.repeat(selectedCard.dangerLevel)}</div>
             )}
             
-            {/* Reveal button for host */}
             {isHost && !currentPlayer?.revealedCards.includes(selectedCard.id) && (
-              <button
-                onClick={() => {
-                  revealCard(selectedCard.id);
-                  setSelectedCard(null);
-                }}
-                className="mt-4 w-full py-2 bg-red-600 rounded-lg text-white"
-              >
+              <button onClick={() => { revealCard(selectedCard.id); setSelectedCard(null); }} className="mt-4 w-full py-2 bg-red-600 rounded-lg text-white">
                 Открыть всем
               </button>
             )}
@@ -310,29 +318,123 @@ export default function Game() {
       )}
       
       {/* Voting Modal */}
-      {showVotingModal && room.currentThreat && (
+      {showVotingModal && (
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
           <div className="bg-gray-900 p-6 rounded-lg max-w-lg w-full border border-red-500">
-            <h3 className="text-xl font-bold text-white mb-4">Угроза не решена!</h3>
-            <p className="text-gray-400 mb-4">Кого изгнать?</p>
-            
+            <h3 className="text-xl font-bold text-white mb-4">Угроза не решена! Кого изгнать?</h3>
             <div className="space-y-2">
               {room.players.filter(p => !p.eliminated && p.id !== playerId).map(player => (
-                <button
-                  key={player.id}
-                  onClick={() => vote(player.id)}
-                  className="w-full p-3 bg-gray-800 hover:bg-gray-700 rounded-lg text-white text-left"
-                >
+                <button key={player.id} onClick={() => vote(player.id)} className="w-full p-3 bg-gray-800 hover:bg-gray-700 rounded-lg text-white text-left">
                   {player.name}
                 </button>
               ))}
-              <button
-                onClick={() => useGameStore.setState({ showVotingModal: false })}
-                className="w-full p-3 bg-gray-700 hover:bg-gray-600 rounded-lg text-gray-400"
-              >
+              <button onClick={() => useGameStore.setState({ showVotingModal: false })} className="w-full p-3 bg-gray-700 hover:bg-gray-600 rounded-lg text-gray-400">
                 Воздержаться
               </button>
             </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Scouting Modal */}
+      {showScoutingModal && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+          <div className="bg-gray-900 p-6 rounded-lg max-w-2xl w-full border border-green-500">
+            <h3 className="text-xl font-bold text-white mb-4">🚀 Разведка</h3>
+            
+            {!currentScoutLocation ? (
+              <div className="grid grid-cols-2 gap-3">
+                {SCOUTING_LOCATIONS.map(loc => (
+                  <button
+                    key={loc.name}
+                    onClick={() => selectLocation(loc)}
+                    className="p-4 bg-gray-800 hover:bg-gray-700 rounded-lg text-left border border-gray-700"
+                  >
+                    <h4 className="text-white font-bold">{loc.name}</h4>
+                    <p className="text-gray-400 text-sm">Расстояние: {loc.distance}km</p>
+                    <p className="text-red-400 text-sm">Опасность: {'⚠️'.repeat(loc.danger)}</p>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div>
+                <div className="mb-4 p-4 bg-gray-800 rounded-lg">
+                  <h4 className="text-white font-bold">{currentScoutLocation.name}</h4>
+                  <p className="text-gray-400">{currentScoutLocation.description}</p>
+                  <p className="text-gray-500 text-sm">Расстояние: {currentScoutLocation.distance}km</p>
+                </div>
+                
+                <h4 className="text-white mb-2">Доступные предметы (выберите до 2-5):</h4>
+                <div className="flex flex-wrap gap-2 mb-4">
+                  {currentScoutLocation.items.map(item => (
+                    <button
+                      key={item}
+                      onClick={() => toggleScoutItem(item)}
+                      className={`px-3 py-2 rounded ${scoutItems.includes(item) ? 'bg-green-600 text-white' : 'bg-gray-700 text-gray-300'}`}
+                    >
+                      {item} {scoutItems.includes(item) && '✓'}
+                    </button>
+                  ))}
+                </div>
+                
+                <div className="flex gap-2">
+                  <button onClick={cancelScout} className="flex-1 py-2 bg-gray-700 rounded-lg text-white">Отмена</button>
+                  <button onClick={completeScout} disabled={scoutItems.length === 0} className="flex-1 py-2 bg-green-600 rounded-lg text-white disabled:opacity-50">
+                    Отправиться ({Math.max(20, 80 - currentScoutLocation.distance * 10 + scoutItems.length * 5)}% шанс вернуться)
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+      
+      {/* Maniac Kill Modal */}
+      {showKillModal && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+          <div className="bg-gray-900 p-6 rounded-lg max-w-lg w-full border border-purple-500">
+            <h3 className="text-xl font-bold text-purple-400 mb-4">🔪 Ночь. Вы маньяк.</h3>
+            <p className="text-gray-400 mb-4">Кого вы хотите убить?</p>
+            <div className="space-y-2">
+              {room.players.filter(p => !p.eliminated && p.id !== playerId).map(player => (
+                <button key={player.id} onClick={() => killPlayer(player.id)} className="w-full p-3 bg-gray-800 hover:bg-purple-900 rounded-lg text-white text-left">
+                  {player.name}
+                </button>
+              ))}
+              <button onClick={() => { useGameStore.setState({ showKillModal: false }); nextTurn(); }} className="w-full p-3 bg-gray-700 rounded-lg text-gray-400">
+                Никого (пропустить)
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Event Modal */}
+      {showEventModal && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+          <div className="bg-gray-900 p-6 rounded-lg max-w-lg w-full border border-yellow-500 animate-pulse">
+            <h3 className="text-xl font-bold text-yellow-400 mb-4">
+              {showEventModal.type === 'food_found' && '🍖 Нашли еду!'}
+              {showEventModal.type === 'radiation_burst' && '☢️ Радиация!'}
+              {showEventModal.type === 'maniac' && '🔪 Маньяк среди вас!'}
+              {showEventModal.type === 'genie' && '🧞 Джин!'}
+            </h3>
+            <p className="text-gray-300">
+              {showEventModal.type === 'food_found' && 'Все игроки получают по консерве'}
+              {showEventModal.type === 'radiation_burst' && 'Те, у кого плохое здоровье, теряют сердечко'}
+              {showEventModal.type === 'maniac' && 'Среди вас скрытый маньяк! Он может убивать по ночам!'}
+            </p>
+          </div>
+        </div>
+      )}
+      
+      {/* Maniac Info Modal */}
+      {showManiacModal && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+          <div className="bg-gray-900 p-6 rounded-lg max-w-lg w-full border border-purple-500">
+            <h3 className="text-xl font-bold text-purple-400 mb-4">🔪 Маньяк активирован!</h3>
+            <p className="text-gray-300">Один из игроков теперь маньяк. Он может убивать по ночам!</p>
+            <p className="text-gray-500 text-sm mt-2">Не говорите никому!</p>
           </div>
         </div>
       )}
