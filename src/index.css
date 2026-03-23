@@ -1,0 +1,46 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bunker-dark: #0a0a0a;
+  --bunker-accent: #ff4444;
+}
+
+body {
+  background-color: var(--bunker-dark);
+  background-image: 
+    radial-gradient(ellipse at top, rgba(255, 68, 68, 0.1) 0%, transparent 50%),
+    url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.05'/%3E%3C/svg%3E");
+  min-height: 100vh;
+}
+
+.card-flip {
+  perspective: 1000px;
+}
+
+.card-flip-inner {
+  transition: transform 0.6s;
+  transform-style: preserve-3d;
+}
+
+.card-flip.flipped .card-flip-inner {
+  transform: rotateY(180deg);
+}
+
+.card-front, .card-back {
+  backface-visibility: hidden;
+}
+
+.card-back {
+  transform: rotateY(180deg);
+}
+
+@keyframes siren-pulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 0.7; }
+}
+
+.siren-effect {
+  animation: siren-pulse 0.5s ease-in-out infinite;
+}
