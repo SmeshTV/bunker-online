@@ -6,9 +6,9 @@ export default function JoinRoom() {
   const [name, setName] = useState('');
   const joinRoom = useGameStore((state) => state.joinRoom);
   
-  const handleJoin = () => {
+  const handleJoin = async () => {
     if (code.length === 6 && name.length > 0) {
-      joinRoom(code.toUpperCase(), name);
+      await joinRoom(code.toUpperCase(), name);
     }
   };
   

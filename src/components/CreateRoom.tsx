@@ -24,8 +24,8 @@ export default function CreateRoom() {
     eventIntensity: 'medium',
   });
   
-  const handleCreate = () => {
-    createRoom(settings, hostName);
+  const handleCreate = async () => {
+    await createRoom(settings, hostName);
   };
   
   return (

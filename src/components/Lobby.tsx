@@ -4,18 +4,18 @@ import { useGameStore } from '../stores/gameStore';
 export default function Lobby() {
   const { room, playerId, isHost, startGame, leaveRoom } = useGameStore();
   const [playerName, setPlayerName] = useState('');
+  const [starting, setStarting] = useState(false);
   
   if (!room) return null;
   
-  const joinRoom = useGameStore.getState().joinRoom;
-  const handleJoin = () => {
-    if (playerName.trim()) {
-      joinRoom(room.code, playerName.trim());
-    }
-  };
-  
   const copyCode = () => {
     navigator.clipboard.writeText(room.code);
+  };
+  
+  const handleStartGame = async () => {
+    setStarting(true);
+    startGame();
+    setStarting(false);
   };
   
   return (
@@ -47,7 +47,11 @@ export default function Lobby() {
               className="w-full bg-gray-800 text-white p-3 rounded-lg border border-red-500/30 mb-4"
             />
             <button
-              onClick={handleJoin}
+              onClick={async () => {
+                if (playerName.trim()) {
+                  await useGameStore.getState().joinRoom(room.code, playerName.trim());
+                }
+              }}
               disabled={!playerName.trim()}
               className="w-full py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg disabled:opacity-50"
             >
@@ -62,7 +66,7 @@ export default function Lobby() {
             </h3>
             
             <div className="space-y-3">
-              {room.players.map((player, index) => (
+              {room.players.map((player) => (
                 <div
                   key={player.id}
                   className="flex items-center justify-between p-3 bg-gray-800 rounded-lg"
@@ -84,11 +88,16 @@ export default function Lobby() {
             {/* Host controls */}
             {isHost && room.players.length >= 2 && (
               <button
-                onClick={startGame}
-                className="w-full mt-6 py-4 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg text-xl"
+                onClick={handleStartGame}
+                disabled={starting}
+                className="w-full mt-6 py-4 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg text-xl disabled:opacity-50"
               >
-                Начать игру
+                {starting ? 'Запуск...' : 'Начать игру'}
               </button>
+            )}
+            
+            {!isHost && room.players.length >= 2 && (
+              <p className="text-center text-gray-400 mt-4">Ожидаем начала игры от ведущего...</p>
             )}
           </div>
         )}
