@@ -1,6 +1,5 @@
 import { create } from 'zustand';
 import { Room, Player, Card, Threat, RoomSettings } from './types';
-import { gameSocket } from './socket';
 import { getRandomCards, allCards } from './data/cards';
 
 interface GameState {
@@ -17,9 +16,9 @@ interface GameState {
   showEventModal: { type: string; data: any } | null;
   showManiacModal: boolean;
   
-  connect: () => void;
+  connect: () => Promise<void>;
   disconnect: () => void;
-  createRoom: (settings: Partial<RoomSettings>, hostName: string) => Promise<void>;
+  createRoom: (settings: Partial<RoomSettings>, hostName: string) => Promise<string>;
   joinRoom: (code: string, playerName: string) => Promise<void>;
   leaveRoom: () => void;
   startGame: () => void;
@@ -38,6 +37,65 @@ interface GameState {
 }
 
 const generatePlayerId = () => 'p' + Math.random().toString(36).substr(2, 9);
+const generateRoomCode = () => {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = '';
+  for (let i = 0; i < 6; i++) {
+    code += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return code;
+};
+
+// Firebase configuration
+const FIREBASE_URL = 'https://bunker-game-4feaa-default-rtdb.europe-west1.firebasedatabase.app';
+
+// Firebase helper functions
+const getRoomRef = (code: string) => FIREBASE_URL + '/rooms/' + code;
+
+const fetchRoom = async (code: string): Promise<Room | null> => {
+  try {
+    const res = await fetch(getRoomRef(code) + '.json');
+    return res.ok ? await res.json() : null;
+  } catch {
+    return null;
+  }
+};
+
+const updateRoom = async (code: string, room: Room) => {
+  try {
+    await fetch(getRoomRef(code) + '.json', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(room)
+    });
+  } catch (e) {
+    console.error('Failed to update room:', e);
+  }
+};
+
+const deleteRoom = async (code: string) => {
+  try {
+    await fetch(getRoomRef(code) + '.json', { method: 'DELETE' });
+  } catch {}
+};
+
+// Polling for updates
+let pollInterval: number | null = null;
+
+const startPolling = (code: string, onUpdate: (room: Room) => void) => {
+  stopPolling();
+  pollInterval = window.setInterval(async () => {
+    const room = await fetchRoom(code);
+    if (room) onUpdate(room);
+  }, 1000);
+};
+
+const stopPolling = () => {
+  if (pollInterval) {
+    clearInterval(pollInterval);
+    pollInterval = null;
+  }
+};
 
 export const useGameStore = create<GameState>((set, get) => ({
   room: null,
@@ -53,74 +111,16 @@ export const useGameStore = create<GameState>((set, get) => ({
   showEventModal: null,
   showManiacModal: false,
   
-  connect: () => {
-    gameSocket.connect();
+  connect: async () => {
     set({ connected: true });
-    
-    gameSocket.on('room-created', (data) => {
-      set({ 
-        room: data.room, 
-        playerId: gameSocket.socketId || null, 
-        isHost: true, 
-        currentView: 'lobby' 
-      });
-    });
-    
-    gameSocket.on('joined', (data) => {
-      set({ 
-        room: data.room, 
-        playerId: gameSocket.socketId || null, 
-        currentView: 'lobby' 
-      });
-    });
-    
-    gameSocket.on('player-joined', (data) => {
-      const { room } = get();
-      if (room) {
-        set({ 
-          room: { 
-            ...room, 
-            players: [...room.players, data.player] 
-          } 
-        });
-      }
-    });
-    
-    gameSocket.on('game-started', (data) => {
-      set({ 
-        room: data.room, 
-        currentView: 'game' 
-      });
-    });
-    
-    gameSocket.on('room-updated', (data) => {
-      set({ room: data.room });
-    });
-    
-    gameSocket.on('player-left', (data) => {
-      const { room } = get();
-      if (room) {
-        set({ 
-          room: { 
-            ...room, 
-            players: room.players.filter(p => p.id !== data.playerId) 
-          } 
-        });
-      }
-    });
   },
   
   disconnect: () => {
-    gameSocket.disconnect();
+    stopPolling();
     set({ connected: false });
   },
   
   createRoom: async (settings, hostName) => {
-    const { connected } = get();
-    if (!connected) {
-      get().connect();
-    }
-    
     const defaultSettings: RoomSettings = {
       playerCount: 6,
       cardsPerPlayer: 8,
@@ -135,57 +135,120 @@ export const useGameStore = create<GameState>((set, get) => ({
       forcedVotingEnabled: true,
     };
     
-    const result = await gameSocket.createRoom(
-      { ...defaultSettings, ...settings },
-      hostName
-    );
+    const code = generateRoomCode();
+    const playerId = generatePlayerId();
     
-    if (result.success && result.room) {
-      set({ 
-        room: result.room, 
-        playerId: gameSocket.socketId || null, 
-        isHost: true, 
-        currentView: 'lobby' 
-      });
-    }
+    const room: Room = {
+      code,
+      hostId: playerId,
+      players: [{
+        id: playerId,
+        name: hostName,
+        isHost: true,
+        isOnline: true,
+        hearts: defaultSettings.heartsCount,
+        cards: [],
+        revealedCards: [],
+        eliminated: false,
+        items: [],
+        score: 0,
+        actions: []
+      }],
+      settings: { ...defaultSettings, ...settings },
+      phase: 'lobby',
+      currentDay: 1,
+      currentPlayerIndex: 0,
+      currentThreat: null,
+      events: []
+    };
+    
+    await updateRoom(code, room);
+    set({ room, playerId, isHost: true, currentView: 'lobby' });
+    
+    // Start polling for updates
+    startPolling(code, (updatedRoom) => {
+      set({ room: updatedRoom });
+    });
+    
+    return code;
   },
   
   joinRoom: async (code, playerName) => {
-    const { connected } = get();
-    if (!connected) {
-      get().connect();
+    const room = await fetchRoom(code.toUpperCase());
+    
+    if (!room) {
+      alert('Комната не найдена');
+      return;
     }
     
-    const result = await gameSocket.joinRoom(code, playerName);
+    const playerId = generatePlayerId();
+    const newPlayer: Player = {
+      id: playerId,
+      name: playerName,
+      isHost: false,
+      isOnline: true,
+      hearts: room.settings.heartsCount,
+      cards: [],
+      revealedCards: [],
+      eliminated: false,
+      items: [],
+      score: 0,
+      actions: []
+    };
     
-    if (result.success && result.room) {
-      set({ 
-        room: result.room, 
-        playerId: gameSocket.socketId || null, 
-        isHost: false, 
-        currentView: 'lobby' 
-      });
-    } else {
-      alert(result.error || 'Не удалось присоединиться');
-    }
+    const updatedRoom = {
+      ...room,
+      players: [...room.players, newPlayer]
+    };
+    
+    await updateRoom(code.toUpperCase(), updatedRoom);
+    
+    set({ 
+      room: updatedRoom, 
+      playerId, 
+      isHost: false, 
+      currentView: 'lobby',
+      connected: true 
+    });
+    
+    // Start polling
+    startPolling(code.toUpperCase(), (remoteRoom) => {
+      const { playerId: myId } = get();
+      const me = remoteRoom.players.find((p: Player) => p.id === myId);
+      if (me) {
+        set({ room: remoteRoom });
+      }
+    });
   },
   
-  leaveRoom: () => {
-    const { room } = get();
-    if (room) {
-      gameSocket.leaveRoom(room.code);
+  leaveRoom: async () => {
+    const { room, playerId } = get();
+    if (room && playerId) {
+      const updatedRoom = {
+        ...room,
+        players: room.players.filter(p => p.id !== playerId)
+      };
+      
+      if (updatedRoom.players.length > 0) {
+        await updateRoom(room.code, updatedRoom);
+      } else {
+        await deleteRoom(room.code);
+      }
     }
+    
+    stopPolling();
     set({
       room: null,
       playerId: null,
       isHost: false,
       currentView: 'home',
+      connected: false,
     });
   },
   
   startGame: () => {
-    const { room, playerId } = get();
-    if (!room || !playerId) return;
+    const { room } = get();
+    if (!room) return;
     
     const categories = ['profession', 'bio', 'health', 'hobby', 'phobia', 'info', 'knowledge', 'bagage'];
     
@@ -205,8 +268,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       currentThreat: randomThreat as Threat,
     };
     
-    gameSocket.updateRoom(room.code, updatedRoom);
     set({ room: updatedRoom, currentView: 'game' });
+    updateRoom(room.code, updatedRoom);
   },
   
   revealCard: (cardId) => {
@@ -221,8 +284,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     });
     
     const updatedRoom = { ...room, players };
-    gameSocket.updateRoom(room.code, updatedRoom);
     set({ room: updatedRoom });
+    updateRoom(room.code, updatedRoom);
   },
   
   addThreat: () => {
@@ -233,8 +296,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     const randomThreat = threats[Math.floor(Math.random() * threats.length)];
     
     const updatedRoom = { ...room, currentThreat: randomThreat as Threat };
-    gameSocket.updateRoom(room.code, updatedRoom);
     set({ room: updatedRoom, showThreatModal: randomThreat as Threat });
+    updateRoom(room.code, updatedRoom);
   },
   
   resolveThreat: (item) => {
@@ -245,8 +308,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     
     if (solved) {
       const updatedRoom = { ...room, currentThreat: null, phase: 'reveal' };
-      gameSocket.updateRoom(room.code, updatedRoom);
       set({ room: updatedRoom, showThreatModal: null });
+      updateRoom(room.code, updatedRoom);
     } else {
       const players = room.players.map(p => {
         if (p.id === playerId) {
@@ -256,8 +319,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       });
       
       const updatedRoom = { ...room, players };
-      gameSocket.updateRoom(room.code, updatedRoom);
       set({ room: updatedRoom, showVotingModal: true });
+      updateRoom(room.code, updatedRoom);
     }
   },
   
@@ -273,8 +336,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     });
     
     const updatedRoom = { ...room, players };
-    gameSocket.updateRoom(room.code, updatedRoom);
     set({ room: updatedRoom });
+    updateRoom(room.code, updatedRoom);
   },
   
   returnPlayer: (playerId) => {
@@ -289,8 +352,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     });
     
     const updatedRoom = { ...room, players };
-    gameSocket.updateRoom(room.code, updatedRoom);
     set({ room: updatedRoom });
+    updateRoom(room.code, updatedRoom);
   },
   
   useItem: (item) => {
@@ -305,8 +368,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     });
     
     const updatedRoom = { ...room, players };
-    gameSocket.updateRoom(room.code, updatedRoom);
     set({ room: updatedRoom });
+    updateRoom(room.code, updatedRoom);
   },
   
   startScouting: (playerId) => {
@@ -325,8 +388,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     });
     
     const updatedRoom = { ...room, players, phase: 'reveal' };
-    gameSocket.updateRoom(room.code, updatedRoom);
     set({ room: updatedRoom, showScoutingModal: false });
+    updateRoom(room.code, updatedRoom);
   },
   
   vote: (playerId) => {
@@ -342,8 +405,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     const nextIndex = (room.currentPlayerIndex + 1) % activePlayers.length;
     
     const updatedRoom = { ...room, currentPlayerIndex: nextIndex };
-    gameSocket.updateRoom(room.code, updatedRoom);
     set({ room: updatedRoom });
+    updateRoom(room.code, updatedRoom);
   },
   
   addEvent: (type, description) => {
@@ -358,8 +421,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     };
     
     const updatedRoom = { ...room, events: [...room.events, event] };
-    gameSocket.updateRoom(room.code, updatedRoom);
     set({ room: updatedRoom });
+    updateRoom(room.code, updatedRoom);
   },
   
   toggleManiac: () => {
@@ -379,7 +442,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     });
     
     const updatedRoom = { ...room, players };
-    gameSocket.updateRoom(room.code, updatedRoom);
     set({ room: updatedRoom, showManiacModal: true });
+    updateRoom(room.code, updatedRoom);
   },
 }));
