@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { Room, Player, Card, Threat, RoomSettings } from './types';
-import { getRandomCards, allCards } from './data/cards';
+import { getRandomCards, allCards } from '../data/cards';
 
 interface GameState {
   room: Room | null;
